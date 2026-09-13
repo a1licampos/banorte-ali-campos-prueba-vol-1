@@ -1,51 +1,88 @@
+import time
+import uuid
+from typing import List, Optional
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
 from src.chatbot.chat import Chatbot
 
-app = FastAPI(title="Chatbot API Banorte",
-              version="1.0.0",
-              description="Prueba Ali Campos (chatbot CV)")
+app = FastAPI(
+    title="Chatbot API Banorte",
+    version="1.0.0",
+    description="Prueba Ali Campos (chatbot CV) - Compatible con OpenAI API"
+)
 
 chatbot = Chatbot()
 
-# 1. Definir los modelos de entrada de Open Responses
+# --- Modelos de Request (Entrada) ---
 class Message(BaseModel):
     role: str
     content: str
 
-class OpenResponseRequest(BaseModel):
-    model: Optional[str] = "default-model"
-    input: List[Message]
+class ChatCompletionRequest(BaseModel):
+    model: str = "default-model"
+    messages: List[Message]
+    temperature: Optional[float] = 0.7
+    max_tokens: Optional[int] = None
     stream: Optional[bool] = False
 
-# 2. Inyectar el modelo en el endpoint
-@app.post("/v1/responses")
-async def get_response(request: OpenResponseRequest):
+# --- Modelos de Response (Salida) ---
+class ChoiceMessage(BaseModel):
+    role: str
+    content: str
+
+class Choice(BaseModel):
+    index: int
+    message: ChoiceMessage
+    finish_reason: str
+
+class Usage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str
+    created: int
+    model: str
+    choices: List[Choice]
+    usage: Usage
+
+# --- Endpoint ---
+# El estándar usa la ruta /v1/chat/completions
+@app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
+async def chat_completions(request: ChatCompletionRequest):
     try:
         # Extraer el último mensaje del usuario del historial
-        user_messages = [msg for msg in request.input if msg.role == "user"]
-        if not user_messages:
-            raise HTTPException(status_code=400, detail="No se encontró un mensaje de usuario en el input.")
+        user_message = ""
+        for msg in reversed(request.messages):
+            if msg.role == "user":
+                user_message = msg.content
+                break
         
-        user_query = user_messages[-1].content
+        if not user_message:
+            raise HTTPException(status_code=400, detail="No se encontró un mensaje de usuario.")
 
-        # Llamar a tu función de Groq
-        answer = chatbot.chat_with_groq(user_query)
+        # Obtener respuesta de tu lógica interna
+        answer = chatbot.chat_with_groq(user_message)
 
-        # 3. Retornar el formato exacto que espera Open Responses (síncrono)
-        return {
-            "status": "completed",
-            "model": request.model,
-            "output": [
-                {
-                    "role": "assistant",
-                    "content": answer
-                }
-            ]
-        }
-        
+        # Construir la respuesta con el formato de OpenAI
+        return ChatCompletionResponse(
+            id=f"chatcmpl-{uuid.uuid4().hex}",
+            object="chat.completion",
+            created=int(time.time()),
+            model=request.model,
+            choices=[
+                Choice(
+                    index=0,
+                    message=ChoiceMessage(role="assistant", content=answer),
+                    finish_reason="stop"
+                )
+            ],
+            usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0) # Valores mockeados, actualiza si tienes el conteo real
+        )
+
     except Exception as e:
         print(f"Error retrieving context: {e}")
         raise HTTPException(status_code=500, detail="Error interno del servidor")
